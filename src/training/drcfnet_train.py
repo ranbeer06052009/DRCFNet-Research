@@ -9,7 +9,7 @@ def train(model, train_loader, valid_loader, criterion, optimizer, epochs, devic
     scaler = torch.cuda.amp.GradScaler()
     
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3, verbose=True
+        optimizer, mode='min', factor=0.5, patience=3,
     )
 
     best_valid_loss = float('inf')
