@@ -2,42 +2,65 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class GCFModule(nn.Module):
-    def __init__(self, d_ssr):
-        super(GCFModule, self).__init__()
-        self.w_r = nn.Linear(d_ssr * 2, d_ssr)
-        self.w_c = nn.Linear(d_ssr * 2, d_ssr)
-        self.w_ct = nn.Linear(d_ssr, 1)
-        self.w_ca = nn.Linear(d_ssr, 1)
-        self.w_alpha = nn.Linear(d_ssr * 2, 2)
-        
-        self.layer_norm = nn.LayerNorm(d_ssr)
+class GraphNeuralFusion(nn.Module):
+    def __init__(self, d_model):
+        super(GraphNeuralFusion, self).__init__()
+        self.w_h = nn.Linear(d_model, d_model)
         self.ffn = nn.Sequential(
-            nn.Linear(d_ssr, d_ssr),
+            nn.Linear(d_model * 2, d_model),
             nn.ReLU(),
-            nn.Linear(d_ssr, d_ssr)
+            nn.Linear(d_model, 1)
+        )
+        self.layer_norm = nn.LayerNorm(d_model)
+        
+    def forward(self, nodes):
+        # nodes is a list of tensors, each of shape (B, T, d_model)
+        stacked_nodes = torch.stack(nodes, dim=2) # (B, T, N, d_model)
+        B, T, N, d = stacked_nodes.size()
+        
+        # Step 1: Projection
+        tilde_h = self.w_h(stacked_nodes) # (B, T, N, d)
+        
+        # Step 2: Relation score
+        delta = torch.zeros(B, T, N, N, device=stacked_nodes.device)
+        for i in range(N):
+            for j in range(N):
+                concat_h = torch.cat([tilde_h[:, :, i, :], tilde_h[:, :, j, :]], dim=-1) # (B, T, 2d)
+                delta[:, :, i, j] = self.ffn(concat_h).squeeze(-1) # (B, T)
+                
+        # Step 3: Attention weight
+        xi = F.softmax(delta, dim=-1) # (B, T, N, N)
+        
+        # Step 4: Message passing / Aggregation
+        # h_new_i = sum_j xi_ij * tilde_h_j
+        h_new = torch.sum(xi.unsqueeze(-1) * tilde_h.unsqueeze(2), dim=3) # (B, T, N, d)
+        
+        # Step 5: Final Output
+        h_final = self.layer_norm(stacked_nodes + h_new) # (B, T, N, d)
+        
+        # Split back to list
+        return [h_final[:, :, i, :] for i in range(N)]
+
+
+class GCFModule(nn.Module):
+    def __init__(self, d_model):
+        super(GCFModule, self).__init__()
+        self.w_c = nn.Linear(d_model, d_model)
+        self.w_a = nn.Linear(d_model, d_model)
+        
+        self.layer_norm = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
         )
         
-    def forward(self, h_main, h_comp, m):
-        # h_main: e.g. ssr_t, h_comp: e.g. ssr_a, m: e.g. z_ta
-        # Concat along feature dim
-        concat_h = torch.cat([h_main, h_comp], dim=-1)
+    def forward(self, h):
+        c = torch.sigmoid(self.w_c(h))
+        alpha = F.softmax(self.w_a(h), dim=-1)
         
-        g_r = torch.sigmoid(self.w_r(concat_h))
-        g_c = torch.sigmoid(self.w_c(concat_h))
-        
-        c_t = torch.sigmoid(self.w_ct(h_main))
-        c_a = torch.sigmoid(self.w_ca(h_comp))
-        
-        alpha_logits = self.w_alpha(torch.cat([h_main, m], dim=-1))
-        alpha = F.softmax(alpha_logits, dim=-1)
-        alpha_1 = alpha[..., 0].unsqueeze(-1)
-        alpha_2 = alpha[..., 1].unsqueeze(-1)
-        
-        fused = alpha_1 * c_t * g_r * h_main + alpha_2 * c_a * g_c * m
-        
-        out = self.layer_norm(fused)
-        out = self.ffn(out) + out # Residual connection on FFN
+        h_prime = c * h + alpha * h
+        out = self.ffn(self.layer_norm(h_prime))
         return out
 
 
@@ -75,12 +98,18 @@ class DRCFNet(nn.Module):
         self.cre_ta = nn.MultiheadAttention(embed_dim=d//2, num_heads=n_heads, dropout=dropout, batch_first=True)
         self.cre_tv = nn.MultiheadAttention(embed_dim=d//2, num_heads=n_heads, dropout=dropout, batch_first=True)
         
-        # Step 5: GCF (Gated Controlled Fusion)
-        self.gcf_ta = GCFModule(d_ssr=d//2)
-        self.gcf_tv = GCFModule(d_ssr=d//2)
+        # Step 5: Graph Neural Fusion
+        self.gnn = GraphNeuralFusion(d_model=d//2)
         
-        # Step 6 & 7: Final Prediction
-        # Concatenation of TA, TV, MSR_t, MSR_a, MSR_v = 5 * (d/2) = 2.5 * d
+        # Step 6: Gated Controlled Fusion (per node)
+        self.gcf_t = GCFModule(d_model=d//2)
+        self.gcf_a = GCFModule(d_model=d//2)
+        self.gcf_v = GCFModule(d_model=d//2)
+        self.gcf_ta = GCFModule(d_model=d//2)
+        self.gcf_tv = GCFModule(d_model=d//2)
+        
+        # Step 7: Final Prediction
+        # Concatenation of 5 nodes = 5 * (d/2) = 2.5 * d
         concat_dim = 5 * (d // 2)
         self.fc = nn.Sequential(
             nn.Linear(concat_dim, d),
@@ -111,13 +140,20 @@ class DRCFNet(nn.Module):
         z_tv, _ = self.cre_tv(query=ssr_t, key=ssr_v, value=ssr_v)
         
         # Step 5
-        out_ta = self.gcf_ta(ssr_t, ssr_a, z_ta)
-        out_tv = self.gcf_tv(ssr_t, ssr_v, z_tv)
+        gnn_nodes = [msr_t, msr_a, msr_v, z_ta, z_tv]
+        h1, h2, h3, h4, h5 = self.gnn(gnn_nodes)
         
         # Step 6
-        concatenated = torch.cat([out_ta, out_tv, msr_t, msr_a, msr_v], dim=-1)
+        g1 = self.gcf_t(h1)
+        g2 = self.gcf_a(h2)
+        g3 = self.gcf_v(h3)
+        g4 = self.gcf_ta(h4)
+        g5 = self.gcf_tv(h5)
         
-        # Step 7 (Global Average Pooling over time)
+        # Step 7
+        concatenated = torch.cat([g1, g2, g3, g4, g5], dim=-1)
+        
+        # Global Average Pooling over time
         pooled = concatenated.mean(dim=1)
         output = self.fc(pooled)
         
