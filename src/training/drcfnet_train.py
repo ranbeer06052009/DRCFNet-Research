@@ -18,6 +18,14 @@ def train(
     best_valid_loss = float('inf')
     best_model_state = None
     
+    # History for plotting
+    history = {
+        'train_loss': [],
+        'valid_loss': [],
+        'train_task': [],
+        'valid_task': []
+    }
+    
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
@@ -25,7 +33,6 @@ def train(
         
         loop = tqdm(train_loader, leave=False, desc=f"Epoch {epoch+1}/{epochs}")
         for batch in loop:
-            # batch is (vision, audio, text, labels)
             vision = batch[0].to(device)
             audio = batch[1].to(device)
             text = batch[2].to(device)
@@ -37,10 +44,8 @@ def train(
             loss, loss_dict = criterion(preds, labels, components)
             
             loss.backward()
-            
             if clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-                
             optimizer.step()
             
             train_loss += loss.item()
@@ -52,14 +57,17 @@ def train(
             
         train_loss /= len(train_loader)
         task_l /= len(train_loader)
-        orth_l /= len(train_loader)
-        contr_l /= len(train_loader)
         
         # Validation
         val_loss, val_task, val_orth, val_contr = test(model, valid_loader, criterion, device)
         
-        print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} (Task:{task_l:.4f} Orth:{orth_l:.4f} Contr:{contr_l:.4f})")
-        print(f"Epoch {epoch+1} | Valid Loss: {val_loss:.4f} (Task:{val_task:.4f} Orth:{val_orth:.4f} Contr:{val_contr:.4f})")
+        # Update history
+        history['train_loss'].append(train_loss)
+        history['valid_loss'].append(val_loss)
+        history['train_task'].append(task_l)
+        history['valid_task'].append(val_task)
+        
+        print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} (Task:{task_l:.4f}) | Valid Loss: {val_loss:.4f} (Task:{val_task:.4f})")
         
         if val_loss < best_valid_loss:
             best_valid_loss = val_loss
@@ -70,7 +78,7 @@ def train(
             
     if best_model_state:
         model.load_state_dict(best_model_state)
-    return model
+    return model, history
 
 def test(model, dataloader, criterion, device='cuda' if torch.cuda.is_available() else 'cpu', return_preds=False):
     model.eval()
