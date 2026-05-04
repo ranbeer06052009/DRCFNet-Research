@@ -69,24 +69,28 @@ class GCFModule(nn.Module):
 
 
 class DRCFNet(nn.Module):
-    def __init__(self, dim_v=35, dim_a=74, dim_t=300, d=128, n_heads=4, dropout=0.2):
+    def __init__(self, dim_v=35, dim_a=74, dim_t=300, d=128, n_heads=4, dropout=0.2, num_layers=3):
         super(DRCFNet, self).__init__()
         self.d = d
         
-        # Step 1: Feature Projection
-        self.proj_v = nn.Sequential(nn.Conv1d(dim_v, d, 1), nn.ReLU(), nn.Dropout(dropout))
-        self.proj_a = nn.Sequential(nn.Conv1d(dim_a, d, 1), nn.ReLU(), nn.Dropout(dropout))
-        self.proj_t = nn.Sequential(nn.Conv1d(dim_t, d, 1), nn.ReLU(), nn.Dropout(dropout))
+        # Step 1: Feature Projection with Temporal Context
+        self.proj_v = nn.Sequential(nn.Conv1d(dim_v, d, 3, padding=1), nn.ReLU(), nn.Dropout(dropout))
+        self.proj_a = nn.Sequential(nn.Conv1d(dim_a, d, 3, padding=1), nn.ReLU(), nn.Dropout(dropout))
+        self.proj_t = nn.Sequential(nn.Conv1d(dim_t, d, 3, padding=1), nn.ReLU(), nn.Dropout(dropout))
+        
+        self.ln_v = nn.LayerNorm(d)
+        self.ln_a = nn.LayerNorm(d)
+        self.ln_t = nn.LayerNorm(d)
         
         # Step 2: Temporal Transformer
         encoder_layer_v = nn.TransformerEncoderLayer(d_model=d, nhead=n_heads, dim_feedforward=d*4, dropout=dropout, batch_first=True)
-        self.transformer_v = nn.TransformerEncoder(encoder_layer_v, num_layers=1)
+        self.transformer_v = nn.TransformerEncoder(encoder_layer_v, num_layers=num_layers)
         
         encoder_layer_a = nn.TransformerEncoderLayer(d_model=d, nhead=n_heads, dim_feedforward=d*4, dropout=dropout, batch_first=True)
-        self.transformer_a = nn.TransformerEncoder(encoder_layer_a, num_layers=1)
+        self.transformer_a = nn.TransformerEncoder(encoder_layer_a, num_layers=num_layers)
         
         encoder_layer_t = nn.TransformerEncoderLayer(d_model=d, nhead=n_heads, dim_feedforward=d*4, dropout=dropout, batch_first=True)
-        self.transformer_t = nn.TransformerEncoder(encoder_layer_t, num_layers=1)
+        self.transformer_t = nn.TransformerEncoder(encoder_layer_t, num_layers=num_layers)
         
         # Step 3: MSR/SSR Split Projections
         self.w_ex_v = nn.Linear(d, d // 2)
@@ -113,7 +117,8 @@ class DRCFNet(nn.Module):
         self.gcf_tv = GCFModule(d_model=d//2)
         
         # Positional Encoding (Max sequence length set to 100 to accommodate both MOSI and MOSEI)
-        self.pos_emb = nn.Parameter(torch.randn(1, 100, d))
+        self.pos_emb = nn.Parameter(torch.empty(1, 100, d))
+        nn.init.uniform_(self.pos_emb, -0.01, 0.01)
         
         # Step 7: Final Prediction
         # Concatenation of 5 nodes = 5 * (d/2) = 2.5 * d
@@ -130,10 +135,10 @@ class DRCFNet(nn.Module):
 
     def forward(self, vision, audio, text):
         # Input shapes: (Batch, Seq_Len, Dim)
-        # Conv1d expects (Batch, Channels, Length), so we permute
-        v = self.proj_v(vision.permute(0, 2, 1)).permute(0, 2, 1)
-        a = self.proj_a(audio.permute(0, 2, 1)).permute(0, 2, 1)
-        t = self.proj_t(text.permute(0, 2, 1)).permute(0, 2, 1)
+        # Conv1d expects (Batch, Channels, Length), so we permute, then permute back and normalize
+        v = self.ln_v(self.proj_v(vision.permute(0, 2, 1)).permute(0, 2, 1))
+        a = self.ln_a(self.proj_a(audio.permute(0, 2, 1)).permute(0, 2, 1))
+        t = self.ln_t(self.proj_t(text.permute(0, 2, 1)).permute(0, 2, 1))
         
         # Add Positional Encoding
         v = v + self.pos_emb[:, :v.size(1), :]

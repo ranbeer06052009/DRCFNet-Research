@@ -8,7 +8,9 @@ def train(
     criterion,
     optimizer,
     epochs,
-    device='cuda' if torch.cuda.is_available() else 'cpu'
+    device='cuda' if torch.cuda.is_available() else 'cpu',
+    scheduler=None,
+    clip_grad=1.0
 ):
     model.to(device)
     criterion.to(device)
@@ -35,6 +37,10 @@ def train(
             loss, loss_dict = criterion(preds, labels, components)
             
             loss.backward()
+            
+            if clip_grad > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                
             optimizer.step()
             
             train_loss += loss.item()
@@ -58,6 +64,9 @@ def train(
         if val_loss < best_valid_loss:
             best_valid_loss = val_loss
             best_model_state = model.state_dict()
+            
+        if scheduler is not None:
+            scheduler.step(val_loss)
             
     if best_model_state:
         model.load_state_dict(best_model_state)
