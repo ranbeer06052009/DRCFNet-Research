@@ -1,80 +1,68 @@
 import torch
 from tqdm import tqdm
 
-def train(model, train_loader, valid_loader, criterion, optimizer, epochs, device):
-
+def train(
+    model,
+    train_loader,
+    valid_loader,
+    criterion,
+    optimizer,
+    epochs,
+    device='cuda' if torch.cuda.is_available() else 'cpu'
+):
     model.to(device)
     criterion.to(device)
-
-    scaler = torch.cuda.amp.GradScaler()
     
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3,
-    )
-
     best_valid_loss = float('inf')
     best_model_state = None
-    patience, counter = 5, 0
-
+    
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
-
-        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
-
+        task_l, orth_l, contr_l = 0.0, 0.0, 0.0
+        
+        loop = tqdm(train_loader, leave=False, desc=f"Epoch {epoch+1}/{epochs}")
         for batch in loop:
-            vision, audio, text, labels = [b.to(device) for b in batch]
-
+            # batch is (vision, audio, text, labels)
+            vision = batch[0].to(device)
+            audio = batch[1].to(device)
+            text = batch[2].to(device)
+            labels = batch[3].to(device)
+            
             optimizer.zero_grad()
-
-            with torch.cuda.amp.autocast():
-                preds, components = model(vision, audio, text)
-                loss, _ = criterion(preds, labels, components)
-
-            scaler.scale(loss).backward()
-
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-            scaler.step(optimizer)
-            scaler.update()
-
+            
+            preds, components = model(vision, audio, text)
+            loss, loss_dict = criterion(preds, labels, components)
+            
+            loss.backward()
+            optimizer.step()
+            
             train_loss += loss.item()
+            task_l += loss_dict['task_loss']
+            orth_l += loss_dict['orth_loss']
+            contr_l += loss_dict['contrastive_loss']
+            
             loop.set_postfix(loss=loss.item())
-
+            
         train_loss /= len(train_loader)
-
-        val_loss, *_ = test(model, valid_loader, criterion, device)
-
-        scheduler.step(val_loss)
-
-        print(f"Epoch {epoch+1} | Train: {train_loss:.4f} | Valid: {val_loss:.4f}")
-
+        task_l /= len(train_loader)
+        orth_l /= len(train_loader)
+        contr_l /= len(train_loader)
+        
+        # Validation
+        val_loss, val_task, val_orth, val_contr = test(model, valid_loader, criterion, device)
+        
+        print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} (Task:{task_l:.4f} Orth:{orth_l:.4f} Contr:{contr_l:.4f})")
+        print(f"Epoch {epoch+1} | Valid Loss: {val_loss:.4f} (Task:{val_task:.4f} Orth:{val_orth:.4f} Contr:{val_contr:.4f})")
+        
         if val_loss < best_valid_loss:
             best_valid_loss = val_loss
             best_model_state = model.state_dict()
-            counter = 0
-        else:
-            counter += 1
-            if counter >= patience:
-                print("Early stopping")
-                break
-
+            
     if best_model_state:
         model.load_state_dict(best_model_state)
-
     return model
 
-def compute_metrics(preds, labels):
-    mae = torch.mean(torch.abs(preds - labels))
-    
-    # Binary accuracy
-    preds_bin = (preds > 0).float()
-    labels_bin = (labels > 0).float()
-    
-    acc = (preds_bin == labels_bin).float().mean()
-    
-    return mae.item(), acc.item()
-    
 def test(model, dataloader, criterion, device='cuda' if torch.cuda.is_available() else 'cpu', return_preds=False):
     model.eval()
     test_loss = 0.0
