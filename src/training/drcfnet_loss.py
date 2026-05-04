@@ -3,42 +3,61 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DRCFNetLoss(nn.Module):
-    def __init__(self, lambda_orth=0.01, lambda_contrastive=0.01, task_weight=1.0):
-        super(DRCFNetLoss, self).__init__()
+    def __init__(self, lambda_orth=0.01, lambda_contrastive=0.01, task_weight=1.0, temperature=0.07):
+        super().__init__()
         self.lambda_orth = lambda_orth
         self.lambda_contrastive = lambda_contrastive
         self.task_weight = task_weight
-        # L1 Loss (MAE) is standard for MOSI/MOSEI sentiment regression
+        self.temperature = temperature
         self.task_loss_fn = nn.L1Loss()
         
     def forward(self, preds, labels, components):
-        # 1. Task Loss
+        
+        # ===== 1. TASK LOSS =====
         l_task = self.task_loss_fn(preds, labels)
         
-        # 2. Orthogonality Loss
-        # L_orth = sum(||(MSR_m)^T SSR_m||_F^2)
+        # ===== 2. ORTHOGONALITY LOSS =====
         l_orth = 0.0
-        for m in ['v', 'a', 't']:
+        for m in ['v','a','t']:
             msr = components[f'msr_{m}']
             ssr = components[f'ssr_{m}']
-            # Batch matrix multiplication: (Batch, Dim, Seq) x (Batch, Seq, Dim) -> (Batch, Dim, Dim)
-            orth_matrix = torch.bmm(msr.transpose(1, 2), ssr)
-            # Frobenius norm squared, averaged over batch
-            l_orth += (orth_matrix ** 2).mean()
             
-        # 3. Contrastive Alignment Loss
-        # Pull SSRs closer together: MSE(ssr_t, ssr_a) + MSE(ssr_t, ssr_v)
-        ssr_t = components['ssr_t']
-        ssr_a = components['ssr_a']
-        ssr_v = components['ssr_v']
+            msr = F.normalize(msr, dim=-1)
+            ssr = F.normalize(ssr, dim=-1)
+            
+            orth = torch.bmm(msr.transpose(1,2), ssr)
+            l_orth += (orth ** 2).mean()
         
-        l_contrastive = F.mse_loss(ssr_t, ssr_a) + F.mse_loss(ssr_t, ssr_v)
+        l_orth = l_orth / 3
         
-        # Total Loss
-        total_loss = self.task_weight * l_task + self.lambda_orth * l_orth + self.lambda_contrastive * l_contrastive
+        # ===== 3. CONTRASTIVE LOSS =====
+        ssr_t = components['ssr_t'].mean(dim=1)
+        ssr_a = components['ssr_a'].mean(dim=1)
+        ssr_v = components['ssr_v'].mean(dim=1)
+        
+        ssr_t = F.normalize(ssr_t, dim=-1)
+        ssr_a = F.normalize(ssr_a, dim=-1)
+        ssr_v = F.normalize(ssr_v, dim=-1)
+        
+        labels_idx = torch.arange(ssr_t.size(0)).to(ssr_t.device)
+        
+        sim_ta = torch.matmul(ssr_t, ssr_a.T)
+        sim_tv = torch.matmul(ssr_t, ssr_v.T)
+        
+        l_ta = F.cross_entropy(sim_ta / self.temperature, labels_idx)
+        l_tv = F.cross_entropy(sim_tv / self.temperature, labels_idx)
+        
+        l_contrastive = (l_ta + l_tv) / 2
+        
+        # ===== TOTAL =====
+        total_loss = (
+            self.task_weight * l_task
+            + self.lambda_orth * l_orth
+            + self.lambda_contrastive * l_contrastive
+        )
         
         return total_loss, {
             'task_loss': l_task.item(),
-            'orth_loss': l_orth.item() if isinstance(l_orth, torch.Tensor) else l_orth,
+            'orth_loss': l_orth.item(),
             'contrastive_loss': l_contrastive.item()
         }

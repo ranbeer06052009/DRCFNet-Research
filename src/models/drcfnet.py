@@ -21,12 +21,16 @@ class GraphNeuralFusion(nn.Module):
         # Step 1: Projection
         tilde_h = self.w_h(stacked_nodes) # (B, T, N, d)
         
-        # Step 2: Relation score
-        delta = torch.zeros(B, T, N, N, device=stacked_nodes.device)
-        for i in range(N):
-            for j in range(N):
-                concat_h = torch.cat([tilde_h[:, :, i, :], tilde_h[:, :, j, :]], dim=-1) # (B, T, 2d)
-                delta[:, :, i, j] = self.ffn(concat_h).squeeze(-1) # (B, T)
+        # Step 2: Relation score (Vectorized)
+        tilde_i = tilde_h.unsqueeze(3) # (B, T, N, 1, d)
+        tilde_j = tilde_h.unsqueeze(2) # (B, T, 1, N, d)
+        
+        pair = torch.cat([
+            tilde_i.expand(-1, -1, -1, N, -1),
+            tilde_j.expand(-1, -1, N, -1, -1)
+        ], dim=-1) # (B, T, N, N, 2d)
+        
+        delta = self.ffn(pair).squeeze(-1) # (B, T, N, N)
                 
         # Step 3: Attention weight
         xi = F.softmax(delta, dim=-1) # (B, T, N, N)
@@ -57,9 +61,9 @@ class GCFModule(nn.Module):
         
     def forward(self, h):
         c = torch.sigmoid(self.w_c(h))
-        alpha = F.softmax(self.w_a(h), dim=-1)
+        alpha = torch.sigmoid(self.w_a(h))
         
-        h_prime = c * h + alpha * h
+        h_prime = c * h + (1 - c) * alpha * h
         out = self.ffn(self.layer_norm(h_prime))
         return out
 
@@ -108,9 +112,15 @@ class DRCFNet(nn.Module):
         self.gcf_ta = GCFModule(d_model=d//2)
         self.gcf_tv = GCFModule(d_model=d//2)
         
+        # Positional Encoding (Max sequence length set to 100 to accommodate both MOSI and MOSEI)
+        self.pos_emb = nn.Parameter(torch.randn(1, 100, d))
+        
         # Step 7: Final Prediction
         # Concatenation of 5 nodes = 5 * (d/2) = 2.5 * d
         concat_dim = 5 * (d // 2)
+        
+        self.pool_attn = nn.Linear(concat_dim, 1)
+        
         self.fc = nn.Sequential(
             nn.Linear(concat_dim, d),
             nn.ReLU(),
@@ -125,6 +135,11 @@ class DRCFNet(nn.Module):
         a = self.proj_a(audio.permute(0, 2, 1)).permute(0, 2, 1)
         t = self.proj_t(text.permute(0, 2, 1)).permute(0, 2, 1)
         
+        # Add Positional Encoding
+        v = v + self.pos_emb[:, :v.size(1), :]
+        a = a + self.pos_emb[:, :a.size(1), :]
+        t = t + self.pos_emb[:, :t.size(1), :]
+        
         # Step 2
         h_v = self.transformer_v(v)
         h_a = self.transformer_a(a)
@@ -136,8 +151,12 @@ class DRCFNet(nn.Module):
         msr_t, ssr_t = self.w_ex_t(h_t), self.w_ag_t(h_t)
         
         # Step 4
-        z_ta, _ = self.cre_ta(query=ssr_t, key=ssr_a, value=ssr_a)
-        z_tv, _ = self.cre_tv(query=ssr_t, key=ssr_v, value=ssr_v)
+        z_ta_attn, _ = self.cre_ta(query=ssr_t, key=ssr_a, value=ssr_a)
+        z_tv_attn, _ = self.cre_tv(query=ssr_t, key=ssr_v, value=ssr_v)
+        
+        # Add Residual + LayerNorm
+        z_ta = F.layer_norm(z_ta_attn + ssr_t, z_ta_attn.shape[-1:])
+        z_tv = F.layer_norm(z_tv_attn + ssr_t, z_tv_attn.shape[-1:])
         
         # Step 5
         gnn_nodes = [msr_t, msr_a, msr_v, z_ta, z_tv]
@@ -153,8 +172,9 @@ class DRCFNet(nn.Module):
         # Step 7
         concatenated = torch.cat([g1, g2, g3, g4, g5], dim=-1)
         
-        # Global Average Pooling over time
-        pooled = concatenated.mean(dim=1)
+        # Attention-based Pooling over time
+        pool_weights = F.softmax(self.pool_attn(concatenated), dim=1)
+        pooled = (pool_weights * concatenated).sum(dim=1)
         output = self.fc(pooled)
         
         # Return output and necessary components for loss
