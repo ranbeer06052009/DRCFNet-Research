@@ -23,6 +23,26 @@ class CrossModalAttention(nn.Module):
         alpha = torch.softmax(scores, dim=-1)
         return torch.bmm(alpha, X_tgt)                     # (B, T_src, d_tgt)
 
+    # def forward(self, X_src, X_tgt):
+    # # Shape guards
+    #   if X_src.dim() == 1:
+    #     X_src = X_src.unsqueeze(0).unsqueeze(1)
+    #   elif X_src.dim() == 2:
+    #     X_src = X_src.unsqueeze(0)
+
+    #   if X_tgt.dim() == 1:
+    #     X_tgt = X_tgt.unsqueeze(0).unsqueeze(1)
+    #   elif X_tgt.dim() == 2:
+    #     X_tgt = X_tgt.unsqueeze(0)
+
+    # # Empty memory case
+    #   if X_tgt.size(1) == 0:
+    #     return X_src
+
+    #   X_tgt_proj = self.W(X_tgt)                 # (B, T_tgt, d_src)
+    #   scores = torch.bmm(X_src, X_tgt_proj.transpose(1, 2))
+    #   alpha = torch.softmax(scores, dim=-1)
+    #   return torch.bmm(alpha, X_tgt)
 
 class CrossModalGRU(nn.Module):
     """
