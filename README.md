@@ -1,4 +1,4 @@
-# Multimodal Emotion Recognition
+# Multimodal Emotion Recognition:
 This repository explores a range of architectures for Multimodal Emotion Recognition (MER), emphasizing the integration of multiple modalities (text, audio, video) to improve sentiment analysis. Each architecture offers unique strengths and trade-offs concerning accuracy, efficiency, and resilience to challenges like misaligned or missing modalities. Transformer-based methods consistently demonstrate the highest effectiveness for MSA tasks.
 
 # Datasets
