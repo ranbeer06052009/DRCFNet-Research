@@ -1,0 +1,13 @@
+Components/Designs/Mechanisms,MOSI Acc_2 ↑,MOSI F1 ↑,MOSEI Acc_2 ↑,MOSEI F1 ↑
+DRCFNet (Full Model),85.8,86.4,86.5,87.2
+Necessity of Neuro-Symbolic Guidance,,,,
+w/o Neuro-Symbolic Loss $\mathcal{L}_{logic}$,84.1,84.5,84.9,85.3
+Importance of Modality Projection,,,,
+w/o MSTCN Projection,82.5,82.8,83.2,83.6
+w/o Positional Encoding,84.9,85.3,85.6,86.1
+Impact of Bimodal Graph Context Fusion (GCF),,,,
+w/o Bimodal GCF Module,82.1,82.3,82.7,83.1
+w/o Multi-Head Attention Layer,83.7,84.0,84.5,84.9
+Effectiveness of Graph Fusion Mechanisms,,,,
+w/o Multi-Head Graph Fusion,83.4,83.8,84.2,84.6
+w/ Feature Addition Only,82.8,83.1,83.5,84.0

@@ -1,0 +1,9 @@
+Setting,MOSI,MOSEI
+Batch Size,32,64
+Epoch Number,50,60
+Hidden Dimension d,128,128
+Learning Rate,1e-4,2e-4
+Weight Decay,0.01,0.01
+Attention Head,4,8
+Dropout Rate,0.2,0.2
+Neuro-Symbolic Penalty $\lambda_{logic}$,0.1,0.15
