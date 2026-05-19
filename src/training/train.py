@@ -1,7 +1,15 @@
 import os
+import sys
 import torch
 import numpy as np
 from evaluation.performance import eval_affect
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from evaluation.visualizations import plot_pair_weights, plot_training_curves
+except ImportError:
+    pass
+
 
 def train_epoch(model, dataloader, optimizer, criterion, device='cuda', clip_grad=1.0):
     model.train()
@@ -36,7 +44,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device='cuda', clip_gra
     return total_loss / num_batches, total_task / num_batches, total_logic / num_batches
 
 
-def test(model, dataloader, criterion, device='cuda', return_preds=False):
+def test(model, dataloader, criterion, device='cuda', return_preds=False, generate_visuals=False, epoch=None):
     model.eval()
     total_loss = 0.0
     total_task = 0.0
@@ -55,6 +63,13 @@ def test(model, dataloader, criterion, device='cuda', return_preds=False):
             
             logits, features = model(vision, audio, text, kg_features=None)
             
+            if generate_visuals and 'pair_weights' in features and len(all_preds) == 0:
+                # Save pair weights for the first batch of this evaluation
+                weights = features['pair_weights'][0].cpu().numpy().flatten()
+                os.makedirs("visuals_output", exist_ok=True)
+                ep_str = f"_epoch_{epoch}" if epoch is not None else ""
+                plot_pair_weights(weights, save_path=f"visuals_output/pair_weights{ep_str}.png")
+                
             loss, l_task, l_logic = criterion(logits, labels, features)
             
             total_loss += loss.item()
@@ -83,14 +98,14 @@ def test(model, dataloader, criterion, device='cuda', return_preds=False):
     return metrics
 
 
-def train(model, train_loader, valid_loader, criterion, optimizer, epochs=50, device='cuda', scheduler=None, clip_grad=1.0, save_path='best_model.pth'):
+def train(model, train_loader, valid_loader, criterion, optimizer, epochs=50, device='cuda', scheduler=None, clip_grad=1.0, save_path='best_model.pth', generate_visuals=False):
     history = {'train_loss': [], 'val_loss': [], 'val_acc': [], 'train_task': [], 'valid_task': [], 'train_logic': [], 'valid_logic': []}
     best_val_loss = float('inf')
     
     for epoch in range(epochs):
         t_loss, t_task, t_logic = train_epoch(model, train_loader, optimizer, criterion, device, clip_grad)
         
-        val_metrics = test(model, valid_loader, criterion, device)
+        val_metrics = test(model, valid_loader, criterion, device, generate_visuals=generate_visuals, epoch=epoch+1)
         v_loss = val_metrics['Loss']
         v_acc = val_metrics['Accuracy']
         
@@ -113,6 +128,14 @@ def train(model, train_loader, valid_loader, criterion, optimizer, epochs=50, de
             print(f"  >> Saved best model with Val Loss: {v_loss:.4f}")
             
     print(f"Training complete. Best Val Loss: {best_val_loss:.4f}")
+    
+    if generate_visuals:
+        os.makedirs("visuals_output", exist_ok=True)
+        try:
+            plot_training_curves(history, save_path="visuals_output/training_curves_final.png")
+        except NameError:
+            pass
+
     
     # Load best model weights before returning
     if os.path.exists(save_path):

@@ -252,5 +252,6 @@ class DRCFNet(nn.Module):
             'msr_v': msr_v, 'ssr_v': ssr_v,
             'msr_a': msr_a, 'ssr_a': ssr_a,
             'msr_t': msr_t, 'ssr_t': ssr_t,
-            'kg_node': kg_node, 'h_kg': h_kg
+            'kg_node': kg_node, 'h_kg': h_kg,
+            'pair_weights': pair_weights
         }
