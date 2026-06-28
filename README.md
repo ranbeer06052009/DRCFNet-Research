@@ -62,7 +62,7 @@ DRCFNet was rigorously evaluated against state-of-the-art baselines on two gold-
 ### 1. Installation
 Clone the repository and install the required dependencies:
 ```bash
-git clone https://github.com/YourUsername/DRCFNet.git
+git clone https://github.com/ranbeer06052009/DRCFNet.git
 cd DRCFNet
 pip install -r requirements.txt
 ```
@@ -85,7 +85,7 @@ If you find our work useful in your research, please consider citing our paper:
 ```bibtex
 @article{drcfnet2026,
   title={Streaming-Resilient Multimodal Emotion Recognition via Neuro-Symbolic Disentanglement},
-  author={Anonymous},
+  author={Ranbeer Singh and Soumyojit Mukhopadhyay},
   journal={Information Systems Frontiers},
   year={2026}
 }
